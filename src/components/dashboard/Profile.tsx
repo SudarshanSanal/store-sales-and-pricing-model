@@ -5,7 +5,7 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = (typeof window !== 'undefined' ? (window.location.origin.includes('localhost') && window.location.port === '8080' ? 'http://localhost:5000' : '') : '');
 
 export function Profile({ onVerifyClick }: { onVerifyClick?: () => void }) {
   const { session, signOut, profile, changeEmail, verifyEmail, resendVerificationOtp } = useAuth();

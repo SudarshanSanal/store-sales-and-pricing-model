@@ -4,7 +4,7 @@ import { Layers, Plus, X, Loader2, CheckCircle2, Database, AlertTriangle } from 
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = (typeof window !== 'undefined' ? (window.location.origin.includes('localhost') && window.location.port === '8080' ? 'http://localhost:5000' : '') : '');
 
 interface DatasetOption {
   _id: string;

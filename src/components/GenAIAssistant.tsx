@@ -792,7 +792,7 @@ export function GenAIAssistant() {
                           onClick={() => {
                             if (action.isAction && action.query === 'export_csv') {
                               const tokenParam = session?.token ? `?token=${encodeURIComponent(session.token)}` : '';
-                              window.open(`http://localhost:5000/api/forecasts/export-csv${tokenParam}`, '_blank');
+                              window.open(`/api/forecasts/export-csv${tokenParam}`, '_blank');
                             } else {
                               handleSendMessage(action.query);
                             }

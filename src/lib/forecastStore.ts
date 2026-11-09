@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = (typeof window !== 'undefined' ? (window.location.origin.includes('localhost') && window.location.port === '8080' ? 'http://localhost:5000' : '') : '');
 
 export interface TargetMetrics {
   mae: number;
@@ -154,7 +154,7 @@ export function useSelectedProduct() {
 }
 
 export async function fetchForecastForDataset(datasetId: string, token: string): Promise<ForecastResult | null> {
-  const BACKEND_URL = 'http://localhost:5000';
+  const BACKEND_URL = (typeof window !== 'undefined' ? (window.location.origin.includes('localhost') && window.location.port === '8080' ? 'http://localhost:5000' : '') : '');
   try {
     const res = await fetch(`${BACKEND_URL}/api/forecasts/dataset/${datasetId}`, {
       headers: { Authorization: `Bearer ${token}` }

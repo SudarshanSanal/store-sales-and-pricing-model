@@ -31,7 +31,7 @@ export function ReportsView() {
     if (!session?.token) return;
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/reports', {
+      const res = await fetch('/api/reports', {
         headers: { Authorization: `Bearer ${session.token}` }
       });
       if (res.ok) {
@@ -164,7 +164,7 @@ export function ReportsView() {
 
       // Otherwise fetch the generated binary PDF from the server download endpoint
       toast.info('Downloading official executive PDF report...');
-      const res = await fetch(`http://localhost:5000/api/reports/${report._id}/download`, {
+      const res = await fetch(`/api/reports/${report._id}/download`, {
         headers: { Authorization: `Bearer ${session?.token}` }
       });
 
@@ -203,7 +203,7 @@ export function ReportsView() {
 
     setGenerating(true);
     try {
-      const res = await fetch('http://localhost:5000/api/reports/generate', {
+      const res = await fetch('/api/reports/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -240,7 +240,7 @@ export function ReportsView() {
 
     setEmailingId(report._id);
     try {
-      const res = await fetch(`http://localhost:5000/api/reports/${report._id}/email`, {
+      const res = await fetch(`/api/reports/${report._id}/email`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.token}` }
       });

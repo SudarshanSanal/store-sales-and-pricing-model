@@ -18,7 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { motion } from 'framer-motion';
 import { soundFx } from '@/lib/sound';
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = (typeof window !== 'undefined' ? (window.location.origin.includes('localhost') && window.location.port === '8080' ? 'http://localhost:5000' : '') : '');
 
 export interface NotificationItem {
   _id: string;

@@ -6,10 +6,15 @@ import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { generateExecutiveReportBuffer } from './pdfReportGenerator.js';
 import { processAIChat, calculateInventoryMetrics, invalidateCopilotCache } from './aiCopilotService.js';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -2117,6 +2122,21 @@ app.get('/api/forecasts/export-csv', authenticateToken, async (req, res) => {
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', server: 'NodeJS Express', database: db ? 'connected' : 'disconnected' });
+});
+
+// Serve Vite production build static assets if dist exists
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// SPA fallback for frontend client routing
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return next();
+  }
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'), (err) => {
+    if (err) {
+      res.status(200).send('SV Forecast API is running.');
+    }
+  });
 });
 
 app.listen(PORT, () => {

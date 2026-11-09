@@ -106,7 +106,7 @@ const Index = () => {
   const loadDatasetForTraining = async (datasetIdToLoad: string) => {
     if (!session?.token) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/datasets/${datasetIdToLoad}`, {
+      const res = await fetch(`/api/datasets/${datasetIdToLoad}`, {
         headers: { Authorization: `Bearer ${session.token}` }
       });
       if (res.ok) {
