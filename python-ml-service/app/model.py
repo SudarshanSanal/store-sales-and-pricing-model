@@ -39,7 +39,10 @@ from sklearn.neural_network import MLPRegressor
 import xgboost as xgb
 
 
-MODEL_DIR = os.environ.get("MODEL_DIR", "/data/models")
+# In containerized/serverless environments like Render or local dev,
+# fallback gracefully to a local ./models directory if /data is not writable.
+_default_model_dir = "/data/models" if os.path.exists("/data") and os.access("/data", os.W_OK) else os.path.join(os.path.dirname(__file__), "..", "models")
+MODEL_DIR = os.environ.get("MODEL_DIR", _default_model_dir)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 SEQ_LEN = 30
