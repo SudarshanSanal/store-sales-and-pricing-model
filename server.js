@@ -2127,16 +2127,16 @@ app.get('/api/health', (req, res) => {
 // Serve Vite production build static assets if dist exists
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// SPA fallback for frontend client routing
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) {
-    return next();
+// SPA fallback for frontend client routing (compatible with Express 5 / path-to-regexp v8)
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api')) {
+    return res.sendFile(path.join(__dirname, 'dist', 'index.html'), (err) => {
+      if (err) {
+        res.status(200).send('SV Forecast API is running.');
+      }
+    });
   }
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'), (err) => {
-    if (err) {
-      res.status(200).send('SV Forecast API is running.');
-    }
-  });
+  next();
 });
 
 app.listen(PORT, () => {
