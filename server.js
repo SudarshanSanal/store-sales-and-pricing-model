@@ -27,30 +27,27 @@ app.use(express.json({ limit: '50mb' })); // Ensure large CSV uploads are suppor
 // ── Reusable Email Service ───────────────────────────────────────────────────
 function createEmailTransporter() {
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-  const port = parseInt(process.env.SMTP_PORT || '587', 10);
-  const secure = port === 465;
   // Clean spaces from App Password (e.g. "abcd efgh ijkl mnop" -> "abcdefghijklmnop")
   const rawPass = process.env.SMTP_PASSWORD || '';
   const pass = rawPass.replace(/\s+/g, '');
+  const user = (process.env.SMTP_USER || '').trim();
 
-  if (host.includes('gmail.com')) {
-    return nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.SMTP_USER || '',
-        pass: pass
-      }
-    });
-  }
-
+  // On cloud platforms like Render, outbound port 587 / 25 is often blocked or throttled by cloud firewalls.
+  // Using direct SSL/TLS on port 465 avoids timeout and firewall blocks.
   return nodemailer.createTransport({
-    host,
-    port,
-    secure,
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true, // true for port 465 (SSL)
     auth: {
-      user: process.env.SMTP_USER || '',
+      user: user,
       pass: pass
-    }
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    connectionTimeout: 10000, // 10s
+    greetingTimeout: 10000,
+    socketTimeout: 15000
   });
 }
 
