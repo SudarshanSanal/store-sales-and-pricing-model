@@ -2242,41 +2242,43 @@ app.get('/api/test-email-config', async (req, res) => {
 
   const results = [];
 
-  // Method 1: Direct SSL on port 465
+  // Method 1: Direct SSL on port 465 (forcing IPv4)
   try {
     const t465 = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
+      family: 4,
       auth: { user, pass },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
     await t465.verify();
     return res.json({
       status: 'success',
-      method: 'Port 465 SSL',
+      method: 'Port 465 SSL (IPv4)',
       message: 'SMTP connection verified successfully with Gmail!',
       user
     });
   } catch (err1) {
-    results.push({ method: 'Port 465', error: err1.message, code: err1.code });
+    results.push({ method: 'Port 465 SSL (IPv4)', error: err1.message, code: err1.code });
   }
 
-  // Method 2: service 'gmail' preset
+  // Method 2: service 'gmail' preset (forcing IPv4)
   try {
     const tService = nodemailer.createTransport({
       service: 'gmail',
+      family: 4,
       auth: { user, pass },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
     await tService.verify();
     return res.json({
       status: 'success',
-      method: 'Gmail Service Preset',
+      method: 'Gmail Service Preset (IPv4)',
       message: 'SMTP connection verified successfully with Gmail!',
       user
     });
@@ -2284,26 +2286,27 @@ app.get('/api/test-email-config', async (req, res) => {
     results.push({ method: 'Service Preset', error: err2.message, code: err2.code });
   }
 
-  // Method 3: STARTTLS on port 587
+  // Method 3: STARTTLS on port 587 (forcing IPv4)
   try {
     const t587 = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
       secure: false,
+      family: 4,
       auth: { user, pass },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
     await t587.verify();
     return res.json({
       status: 'success',
-      method: 'Port 587 STARTTLS',
+      method: 'Port 587 STARTTLS (IPv4)',
       message: 'SMTP connection verified successfully with Gmail!',
       user
     });
   } catch (err3) {
-    results.push({ method: 'Port 587', error: err3.message, code: err3.code });
+    results.push({ method: 'Port 587 STARTTLS (IPv4)', error: err3.message, code: err3.code });
   }
 
   return res.status(500).json({
