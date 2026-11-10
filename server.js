@@ -32,12 +32,13 @@ function createEmailTransporter() {
   const pass = rawPass.replace(/\s+/g, '');
   const user = (process.env.SMTP_USER || '').trim();
 
-  // On cloud platforms like Render, outbound port 587 / 25 is often blocked or throttled by cloud firewalls.
-  // Using direct SSL/TLS on port 465 avoids timeout and firewall blocks.
+  // On cloud platforms like Render, IPv6 outbound routing often fails with ENETUNREACH.
+  // We force IPv4 resolution by setting family: 4.
   return nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 465,
-    secure: true, // true for port 465 (SSL)
+    secure: true, // SSL
+    family: 4, // Force IPv4 (fixes ENETUNREACH 2607:f8b0:400e:c08::6d:465)
     auth: {
       user: user,
       pass: pass
@@ -45,9 +46,9 @@ function createEmailTransporter() {
     tls: {
       rejectUnauthorized: false
     },
-    connectionTimeout: 10000, // 10s
-    greetingTimeout: 10000,
-    socketTimeout: 15000
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000
   });
 }
 
@@ -59,13 +60,36 @@ async function sendEmail({ to, subject, html, text, attachments }) {
 
   console.log(`[EMAIL DELIVERY] Attempting delivery to: ${to} | Subject: "${subject}"`);
 
-  // OPTION A: HTTP REST API via Resend (Bypasses Render's blocked SMTP ports completely!)
+  // PRIMARY: Direct SMTP (Gmail) with IPv4 enforcement
+  if (process.env.SMTP_USER && process.env.SMTP_PASSWORD) {
+    try {
+      const currentTransporter = createEmailTransporter();
+      const info = await currentTransporter.sendMail({
+        from: `"${fromName}" <${fromEmail}>`,
+        to,
+        subject,
+        text: text || html.replace(/<[^>]+>/g, ''),
+        html,
+        attachments
+      });
+      console.log(`[EMAIL DELIVERY] ✓ Gmail SMTP sent successfully | messageId: ${info.messageId} | to: ${to}`);
+      return { success: true, messageId: info.messageId };
+    } catch (smtpErr) {
+      console.warn(`[EMAIL DELIVERY] ⚠ Gmail SMTP delivery failed to ${to}:`, smtpErr.message);
+      // Fall through to Resend HTTP API if configured
+    }
+  }
+
+  // SECONDARY / FALLBACK: HTTP REST API via Resend
   if (process.env.RESEND_API_KEY) {
     try {
       const resendAttachments = (attachments || []).map(att => ({
         filename: att.filename,
         content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
       }));
+
+      // Resend from address: user-configured domain or onboarding fallback
+      const resendFrom = process.env.RESEND_FROM || `${fromName} <onboarding@resend.dev>`;
 
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -74,7 +98,7 @@ async function sendEmail({ to, subject, html, text, attachments }) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          from: `${fromName} <onboarding@resend.dev>`,
+          from: resendFrom,
           to: [to],
           subject,
           html,
@@ -93,32 +117,12 @@ async function sendEmail({ to, subject, html, text, attachments }) {
       }
     } catch (apiErr) {
       console.error('[EMAIL DELIVERY] ✗ Resend HTTP dispatch failed:', apiErr.message);
-      // Fall through to SMTP attempt
+      throw new Error(`Email delivery failed: ${apiErr.message}`);
     }
   }
 
-  // OPTION B: Direct SMTP (Gmail)
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
-    console.warn(`[EMAIL OTP] ⚠ No email credentials (RESEND_API_KEY or SMTP_USER) configured.`);
-    return { success: false, mock: true, reason: 'No email service credentials configured' };
-  }
-
-  try {
-    const currentTransporter = createEmailTransporter();
-    const info = await currentTransporter.sendMail({
-      from: `"${fromName}" <${fromEmail}>`,
-      to,
-      subject,
-      text: text || html.replace(/<[^>]+>/g, ''),
-      html,
-      attachments
-    });
-    console.log(`[EMAIL OTP] ✓ Message sent successfully | messageId: ${info.messageId} | to: ${to}`);
-    return { success: true, messageId: info.messageId };
-  } catch (err) {
-    console.error(`[EMAIL OTP] ✗ SMTP delivery FAILED to ${to}:`, err.message);
-    throw new Error(`Email delivery failed: ${err.message}`);
-  }
+  console.warn(`[EMAIL DELIVERY] ⚠ No working email service credentials configured.`);
+  return { success: false, mock: true, reason: 'No email service credentials configured' };
 }
 
 function generateOTP() {
