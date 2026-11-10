@@ -25,15 +25,36 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Ensure large CSV uploads are supported
 
 // ── Reusable Email Service ───────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: process.env.SMTP_PORT === '465',
-  auth: {
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASSWORD || ''
+function createEmailTransporter() {
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  const secure = port === 465;
+  // Clean spaces from App Password (e.g. "abcd efgh ijkl mnop" -> "abcdefghijklmnop")
+  const rawPass = process.env.SMTP_PASSWORD || '';
+  const pass = rawPass.replace(/\s+/g, '');
+
+  if (host.includes('gmail.com')) {
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.SMTP_USER || '',
+        pass: pass
+      }
+    });
   }
-});
+
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: {
+      user: process.env.SMTP_USER || '',
+      pass: pass
+    }
+  });
+}
+
+const transporter = createEmailTransporter();
 
 async function sendEmail({ to, subject, html, text, attachments }) {
   const fromName = process.env.EMAIL_FROM_NAME || 'SV Forecast AI';
@@ -43,14 +64,14 @@ async function sendEmail({ to, subject, html, text, attachments }) {
 
   // DEV MODE: No SMTP credentials configured
   if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
-    console.warn(`[EMAIL OTP] ⚠ DEV MODE — SMTP_USER/SMTP_PASSWORD not set in .env`);
-    console.warn(`[EMAIL OTP] ⚠ Email NOT actually sent to ${to}. Set SMTP credentials to enable real delivery.`);
-    // Return mock so dev flow continues, but warn clearly
-    return { success: false, mock: true, reason: 'SMTP credentials not configured in .env' };
+    console.warn(`[EMAIL OTP] ⚠ DEV MODE — SMTP_USER/SMTP_PASSWORD not set in environment`);
+    console.warn(`[EMAIL OTP] ⚠ Email NOT actually sent to ${to}. Set SMTP credentials in Render Environment Variables to enable real delivery.`);
+    return { success: false, mock: true, reason: 'SMTP credentials not configured in environment' };
   }
 
   try {
-    const info = await transporter.sendMail({
+    const currentTransporter = createEmailTransporter();
+    const info = await currentTransporter.sendMail({
       from: `"${fromName}" <${fromEmail}>`,
       to,
       subject,
@@ -62,7 +83,6 @@ async function sendEmail({ to, subject, html, text, attachments }) {
     return { success: true, messageId: info.messageId };
   } catch (err) {
     console.error(`[EMAIL OTP] ✗ SMTP delivery FAILED to ${to}:`, err.message);
-    // Re-throw so callers can handle the actual failure
     throw new Error(`Email delivery failed: ${err.message}`);
   }
 }
