@@ -57,13 +57,50 @@ async function sendEmail({ to, subject, html, text, attachments }) {
   const fromName = process.env.EMAIL_FROM_NAME || 'SV Forecast AI';
   const fromEmail = process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@svforecast.com';
 
-  console.log(`[EMAIL OTP] Attempting delivery to: ${to} | Subject: "${subject}"`);
+  console.log(`[EMAIL DELIVERY] Attempting delivery to: ${to} | Subject: "${subject}"`);
 
-  // DEV MODE: No SMTP credentials configured
+  // OPTION A: HTTP REST API via Resend (Bypasses Render's blocked SMTP ports completely!)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const resendAttachments = (attachments || []).map(att => ({
+        filename: att.filename,
+        content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
+      }));
+
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: `${fromName} <onboarding@resend.dev>`,
+          to: [to],
+          subject,
+          html,
+          text: text || html.replace(/<[^>]+>/g, ''),
+          attachments: resendAttachments.length > 0 ? resendAttachments : undefined
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        console.log(`[EMAIL DELIVERY] ✓ Resend HTTP API sent successfully | id: ${data.id} | to: ${to}`);
+        return { success: true, messageId: data.id };
+      } else {
+        console.error('[EMAIL DELIVERY] ✗ Resend API error:', data);
+        throw new Error(data.message || 'Resend API failed');
+      }
+    } catch (apiErr) {
+      console.error('[EMAIL DELIVERY] ✗ Resend HTTP dispatch failed:', apiErr.message);
+      // Fall through to SMTP attempt
+    }
+  }
+
+  // OPTION B: Direct SMTP (Gmail)
   if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
-    console.warn(`[EMAIL OTP] ⚠ DEV MODE — SMTP_USER/SMTP_PASSWORD not set in environment`);
-    console.warn(`[EMAIL OTP] ⚠ Email NOT actually sent to ${to}. Set SMTP credentials in Render Environment Variables to enable real delivery.`);
-    return { success: false, mock: true, reason: 'SMTP credentials not configured in environment' };
+    console.warn(`[EMAIL OTP] ⚠ No email credentials (RESEND_API_KEY or SMTP_USER) configured.`);
+    return { success: false, mock: true, reason: 'No email service credentials configured' };
   }
 
   try {
