@@ -25,200 +25,46 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Ensure large CSV uploads are supported
 
 // ── Reusable Email Service ───────────────────────────────────────────────────
-function createEmailTransporter() {
-  const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
-  const rawPort = parseInt(process.env.SMTP_PORT, 10);
-  const port = (!isNaN(rawPort) && rawPort > 0) ? rawPort : 465;
-  const isSecure = process.env.SMTP_SECURE !== undefined 
-    ? process.env.SMTP_SECURE === 'true' 
-    : port === 465;
-
-  const rawPass = process.env.SMTP_PASSWORD || '';
-  const pass = rawPass.replace(/\s+/g, '');
-  const user = (process.env.SMTP_USER || '').trim();
-
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure: isSecure,
-    family: 4, // Enforce IPv4 to avoid ENETUNREACH on cloud environments like Render
-    auth: {
-      user,
-      pass
-    },
-    tls: {
-      rejectUnauthorized: false
-    },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000
-  });
-}
-
-const transporter = createEmailTransporter();
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: process.env.SMTP_PORT === '465',
+  auth: {
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASSWORD || ''
+  }
+});
 
 async function sendEmail({ to, subject, html, text, attachments }) {
   const fromName = process.env.EMAIL_FROM_NAME || 'SV Forecast AI';
   const fromEmail = process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@svforecast.com';
 
-  console.log(`[EMAIL DELIVERY] Attempting delivery to: ${to} | Subject: "${subject}"`);
+  console.log(`[EMAIL OTP] Attempting delivery to: ${to} | Subject: "${subject}"`);
 
-  // 1. Mailjet HTTP REST API (Free: 200 emails/day, no phone/domain required)
-  if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
-    try {
-      const mjAuth = Buffer.from(`${process.env.MAILJET_API_KEY.trim()}:${process.env.MAILJET_SECRET_KEY.trim()}`).toString('base64');
-      const mjAttachments = (attachments || []).map(att => ({
-        ContentType: att.contentType || 'application/pdf',
-        Filename: att.filename,
-        Base64Content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
-      }));
-
-      // Mailjet requires verified sender — use the account registration email
-      const mjSenderEmail = (process.env.MAILJET_SENDER_EMAIL || fromEmail).trim();
-
-      console.log(`[EMAIL DELIVERY] Mailjet: from=${mjSenderEmail}, to=${to}, subject="${subject}"`);
-
-      const res = await fetch('https://api.mailjet.com/v3.1/send', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${mjAuth}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          Messages: [{
-            From: { Email: mjSenderEmail, Name: fromName },
-            To: [{ Email: to }],
-            Subject: subject,
-            HTMLPart: html,
-            TextPart: text || html.replace(/<[^>]+>/g, ''),
-            Attachments: mjAttachments.length > 0 ? mjAttachments : undefined
-          }]
-        })
-      });
-
-      const data = await res.json();
-      console.log(`[EMAIL DELIVERY] Mailjet response status: ${res.status}`, JSON.stringify(data));
-
-      if (res.ok && data.Messages && data.Messages[0].Status === 'success') {
-        const msgId = data.Messages[0].To[0].MessageID;
-        console.log(`[EMAIL DELIVERY] ✓ Mailjet API sent successfully | messageId: ${msgId} | to: ${to}`);
-        return { success: true, messageId: String(msgId) };
-      } else {
-        const errMsg = data.Messages?.[0]?.Errors?.[0]?.ErrorMessage || JSON.stringify(data);
-        console.error('[EMAIL DELIVERY] ✗ Mailjet API error:', errMsg);
-        // Don't silently swallow — throw so caller knows email failed
-        throw new Error(`Mailjet API error: ${errMsg}`);
-      }
-    } catch (mjErr) {
-      console.error('[EMAIL DELIVERY] ✗ Mailjet HTTP dispatch failed:', mjErr.message);
-      // If Mailjet is the only configured provider, throw the error up
-      if (!process.env.BREVO_API_KEY && !process.env.RESEND_API_KEY && !(process.env.SMTP_USER && process.env.SMTP_PASSWORD)) {
-        throw mjErr;
-      }
-      // Otherwise fall through to next provider
-    }
+  // DEV MODE: No SMTP credentials configured
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
+    console.warn(`[EMAIL OTP] ⚠ DEV MODE — SMTP_USER/SMTP_PASSWORD not set in .env`);
+    console.warn(`[EMAIL OTP] ⚠ Email NOT actually sent to ${to}. Set SMTP credentials to enable real delivery.`);
+    // Return mock so dev flow continues, but warn clearly
+    return { success: false, mock: true, reason: 'SMTP credentials not configured in .env' };
   }
 
-  // 2. Brevo HTTP REST API (alternative: 300 emails/day)
-  if (process.env.BREVO_API_KEY) {
-    try {
-      const brevoAttachments = (attachments || []).map(att => ({
-        name: att.filename,
-        content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
-      }));
-
-      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'api-key': process.env.BREVO_API_KEY.trim(),
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          sender: { name: fromName, email: process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER || fromEmail },
-          to: [{ email: to }],
-          subject,
-          htmlContent: html,
-          textContent: text || html.replace(/<[^>]+>/g, ''),
-          attachment: brevoAttachments.length > 0 ? brevoAttachments : undefined
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        console.log(`[EMAIL DELIVERY] ✓ Brevo HTTP API sent successfully | messageId: ${data.messageId} | to: ${to}`);
-        return { success: true, messageId: data.messageId };
-      } else {
-        console.warn('[EMAIL DELIVERY] ⚠ Brevo API error:', data);
-      }
-    } catch (brevoErr) {
-      console.warn('[EMAIL DELIVERY] ⚠ Brevo HTTP dispatch failed:', brevoErr.message);
-    }
+  try {
+    const info = await transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
+      to,
+      subject,
+      text: text || html.replace(/<[^>]+>/g, ''),
+      html,
+      attachments
+    });
+    console.log(`[EMAIL OTP] ✓ Message sent successfully | messageId: ${info.messageId} | to: ${to}`);
+    return { success: true, messageId: info.messageId };
+  } catch (err) {
+    console.error(`[EMAIL OTP] ✗ SMTP delivery FAILED to ${to}:`, err.message);
+    // Re-throw so callers can handle the actual failure
+    throw new Error(`Email delivery failed: ${err.message}`);
   }
-
-  // 2. Direct SMTP (Gmail) with IPv4 enforcement
-  if (process.env.SMTP_USER && process.env.SMTP_PASSWORD) {
-    try {
-      const currentTransporter = createEmailTransporter();
-      const info = await currentTransporter.sendMail({
-        from: `"${fromName}" <${fromEmail}>`,
-        to,
-        subject,
-        text: text || html.replace(/<[^>]+>/g, ''),
-        html,
-        attachments
-      });
-      console.log(`[EMAIL DELIVERY] ✓ Gmail SMTP sent successfully | messageId: ${info.messageId} | to: ${to}`);
-      return { success: true, messageId: info.messageId };
-    } catch (smtpErr) {
-      console.warn(`[EMAIL DELIVERY] ⚠ Gmail SMTP delivery failed to ${to}:`, smtpErr.message);
-      // Fall through to Resend HTTP API if configured
-    }
-  }
-
-  // SECONDARY / FALLBACK: HTTP REST API via Resend
-  if (process.env.RESEND_API_KEY) {
-    try {
-      const resendAttachments = (attachments || []).map(att => ({
-        filename: att.filename,
-        content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
-      }));
-
-      // Resend from address: user-configured domain or onboarding fallback
-      const resendFrom = process.env.RESEND_FROM || `${fromName} <onboarding@resend.dev>`;
-
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          from: resendFrom,
-          to: [to],
-          subject,
-          html,
-          text: text || html.replace(/<[^>]+>/g, ''),
-          attachments: resendAttachments.length > 0 ? resendAttachments : undefined
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        console.log(`[EMAIL DELIVERY] ✓ Resend HTTP API sent successfully | id: ${data.id} | to: ${to}`);
-        return { success: true, messageId: data.id };
-      } else {
-        console.error('[EMAIL DELIVERY] ✗ Resend API error:', data);
-        throw new Error(data.message || 'Resend API failed');
-      }
-    } catch (apiErr) {
-      console.error('[EMAIL DELIVERY] ✗ Resend HTTP dispatch failed:', apiErr.message);
-      throw new Error(`Email delivery failed: ${apiErr.message}`);
-    }
-  }
-
-  console.warn(`[EMAIL DELIVERY] ⚠ No working email service credentials configured.`);
-  return { success: false, mock: true, reason: 'No email service credentials configured' };
 }
 
 function generateOTP() {
@@ -2276,176 +2122,6 @@ app.get('/api/forecasts/export-csv', authenticateToken, async (req, res) => {
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', server: 'NodeJS Express', database: db ? 'connected' : 'disconnected' });
-});
-
-// Diagnostic endpoint to test email configuration live on Render
-app.get('/api/test-email-config', async (req, res) => {
-  // 1. Check Mailjet first (preferred for Render free tier)
-  if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
-    try {
-      const mjAuth = Buffer.from(`${process.env.MAILJET_API_KEY.trim()}:${process.env.MAILJET_SECRET_KEY.trim()}`).toString('base64');
-      const testRes = await fetch('https://api.mailjet.com/v3/REST/apikey', {
-        headers: { 'Authorization': `Basic ${mjAuth}` }
-      });
-      if (testRes.ok) {
-        // Also test sending a real ping message or verify sender
-        const testTo = req.query.sendTo;
-        let testSendResult = null;
-        if (testTo) {
-          try {
-            testSendResult = await sendEmail({
-              to: testTo,
-              subject: 'Test Email from SV Forecast AI (Mailjet)',
-              text: 'This is a test email verifying that Mailjet API is working properly on Render.',
-              html: '<h3>Test Successful!</h3><p>Mailjet API is working and sending emails from Render.</p>'
-            });
-          } catch (sendErr) {
-            return res.status(500).json({
-              status: 'partial_error',
-              method: 'Mailjet HTTP API',
-              message: 'API Key is valid, but test email sending failed.',
-              sendError: sendErr.message
-            });
-          }
-        }
-
-        return res.json({
-          status: 'success',
-          method: 'Mailjet HTTP API',
-          message: 'Mailjet API key verified successfully! Emails will be sent via Mailjet.',
-          sender: process.env.MAILJET_SENDER_EMAIL || process.env.EMAIL_FROM || process.env.SMTP_USER || 'configured',
-          testSendResult
-        });
-      } else {
-        const errData = await testRes.json().catch(() => ({}));
-        return res.status(400).json({
-          status: 'error',
-          method: 'Mailjet HTTP API',
-          message: 'Mailjet API key is invalid.',
-          details: errData
-        });
-      }
-    } catch (mjErr) {
-      return res.status(500).json({
-        status: 'error',
-        method: 'Mailjet HTTP API',
-        message: 'Mailjet connectivity test failed: ' + mjErr.message
-      });
-    }
-  }
-
-  // 2. Check Brevo
-  if (process.env.BREVO_API_KEY) {
-    try {
-      const testRes = await fetch('https://api.brevo.com/v3/account', {
-        headers: { 'api-key': process.env.BREVO_API_KEY.trim(), 'Accept': 'application/json' }
-      });
-      if (testRes.ok) {
-        return res.json({
-          status: 'success',
-          method: 'Brevo HTTP API',
-          message: 'Brevo API key verified successfully! Emails will be sent via Brevo.'
-        });
-      }
-    } catch (brevoErr) {
-      // fall through to SMTP
-    }
-  }
-
-  // 3. Fall back to SMTP test
-  const user = (process.env.SMTP_USER || '').trim();
-  const rawPass = process.env.SMTP_PASSWORD || '';
-  const pass = rawPass.replace(/\s+/g, '');
-
-  if (!user || !rawPass) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'No email service configured. Add MAILJET_API_KEY + MAILJET_SECRET_KEY (or SMTP credentials) in Render environment.',
-      envStatus: {
-        hasMAILJET_API_KEY: !!process.env.MAILJET_API_KEY,
-        hasMAILJET_SECRET_KEY: !!process.env.MAILJET_SECRET_KEY,
-        hasBREVO_API_KEY: !!process.env.BREVO_API_KEY,
-        hasSMTP_USER: !!user,
-        hasSMTP_PASSWORD: !!rawPass
-      }
-    });
-  }
-
-  const results = [];
-
-  // Method 1: Direct SSL on port 465 (forcing IPv4)
-  try {
-    const t465 = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      family: 4,
-      auth: { user, pass },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000
-    });
-    await t465.verify();
-    return res.json({
-      status: 'success',
-      method: 'Port 465 SSL (IPv4)',
-      message: 'SMTP connection verified successfully with Gmail!',
-      user
-    });
-  } catch (err1) {
-    results.push({ method: 'Port 465 SSL (IPv4)', error: err1.message, code: err1.code });
-  }
-
-  // Method 2: service 'gmail' preset (forcing IPv4)
-  try {
-    const tService = nodemailer.createTransport({
-      service: 'gmail',
-      family: 4,
-      auth: { user, pass },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000
-    });
-    await tService.verify();
-    return res.json({
-      status: 'success',
-      method: 'Gmail Service Preset (IPv4)',
-      message: 'SMTP connection verified successfully with Gmail!',
-      user
-    });
-  } catch (err2) {
-    results.push({ method: 'Service Preset', error: err2.message, code: err2.code });
-  }
-
-  // Method 3: STARTTLS on port 587 (forcing IPv4)
-  try {
-    const t587 = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      family: 4,
-      auth: { user, pass },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000
-    });
-    await t587.verify();
-    return res.json({
-      status: 'success',
-      method: 'Port 587 STARTTLS (IPv4)',
-      message: 'SMTP connection verified successfully with Gmail!',
-      user
-    });
-  } catch (err3) {
-    results.push({ method: 'Port 587 STARTTLS (IPv4)', error: err3.message, code: err3.code });
-  }
-
-  return res.status(500).json({
-    status: 'error',
-    message: 'All SMTP connection methods failed.',
-    results,
-    tip: 'Render free instances occasionally block direct SMTP ports. If all ports time out, we can switch to a free HTTP API like Resend or Brevo.'
-  });
 });
 
 // Serve Vite production build static assets if dist exists
