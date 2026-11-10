@@ -73,6 +73,11 @@ async function sendEmail({ to, subject, html, text, attachments }) {
         Base64Content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
       }));
 
+      // Mailjet requires verified sender — use the account registration email
+      const mjSenderEmail = (process.env.MAILJET_SENDER_EMAIL || fromEmail).trim();
+
+      console.log(`[EMAIL DELIVERY] Mailjet: from=${mjSenderEmail}, to=${to}, subject="${subject}"`);
+
       const res = await fetch('https://api.mailjet.com/v3.1/send', {
         method: 'POST',
         headers: {
@@ -81,7 +86,7 @@ async function sendEmail({ to, subject, html, text, attachments }) {
         },
         body: JSON.stringify({
           Messages: [{
-            From: { Email: fromEmail, Name: fromName },
+            From: { Email: mjSenderEmail, Name: fromName },
             To: [{ Email: to }],
             Subject: subject,
             HTMLPart: html,
@@ -92,15 +97,25 @@ async function sendEmail({ to, subject, html, text, attachments }) {
       });
 
       const data = await res.json();
+      console.log(`[EMAIL DELIVERY] Mailjet response status: ${res.status}`, JSON.stringify(data));
+
       if (res.ok && data.Messages && data.Messages[0].Status === 'success') {
         const msgId = data.Messages[0].To[0].MessageID;
         console.log(`[EMAIL DELIVERY] ✓ Mailjet API sent successfully | messageId: ${msgId} | to: ${to}`);
         return { success: true, messageId: String(msgId) };
       } else {
-        console.warn('[EMAIL DELIVERY] ⚠ Mailjet API error:', JSON.stringify(data));
+        const errMsg = data.Messages?.[0]?.Errors?.[0]?.ErrorMessage || JSON.stringify(data);
+        console.error('[EMAIL DELIVERY] ✗ Mailjet API error:', errMsg);
+        // Don't silently swallow — throw so caller knows email failed
+        throw new Error(`Mailjet API error: ${errMsg}`);
       }
     } catch (mjErr) {
-      console.warn('[EMAIL DELIVERY] ⚠ Mailjet HTTP dispatch failed:', mjErr.message);
+      console.error('[EMAIL DELIVERY] ✗ Mailjet HTTP dispatch failed:', mjErr.message);
+      // If Mailjet is the only configured provider, throw the error up
+      if (!process.env.BREVO_API_KEY && !process.env.RESEND_API_KEY && !(process.env.SMTP_USER && process.env.SMTP_PASSWORD)) {
+        throw mjErr;
+      }
+      // Otherwise fall through to next provider
     }
   }
 
@@ -2273,11 +2288,33 @@ app.get('/api/test-email-config', async (req, res) => {
         headers: { 'Authorization': `Basic ${mjAuth}` }
       });
       if (testRes.ok) {
+        // Also test sending a real ping message or verify sender
+        const testTo = req.query.sendTo;
+        let testSendResult = null;
+        if (testTo) {
+          try {
+            testSendResult = await sendEmail({
+              to: testTo,
+              subject: 'Test Email from SV Forecast AI (Mailjet)',
+              text: 'This is a test email verifying that Mailjet API is working properly on Render.',
+              html: '<h3>Test Successful!</h3><p>Mailjet API is working and sending emails from Render.</p>'
+            });
+          } catch (sendErr) {
+            return res.status(500).json({
+              status: 'partial_error',
+              method: 'Mailjet HTTP API',
+              message: 'API Key is valid, but test email sending failed.',
+              sendError: sendErr.message
+            });
+          }
+        }
+
         return res.json({
           status: 'success',
           method: 'Mailjet HTTP API',
           message: 'Mailjet API key verified successfully! Emails will be sent via Mailjet.',
-          sender: process.env.EMAIL_FROM || process.env.SMTP_USER || 'configured'
+          sender: process.env.MAILJET_SENDER_EMAIL || process.env.EMAIL_FROM || process.env.SMTP_USER || 'configured',
+          testSendResult
         });
       } else {
         const errData = await testRes.json().catch(() => ({}));
