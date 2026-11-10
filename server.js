@@ -26,22 +26,25 @@ app.use(express.json({ limit: '50mb' })); // Ensure large CSV uploads are suppor
 
 // ── Reusable Email Service ───────────────────────────────────────────────────
 function createEmailTransporter() {
-  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-  // Clean spaces from App Password (e.g. "abcd efgh ijkl mnop" -> "abcdefghijklmnop")
+  const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+  const rawPort = parseInt(process.env.SMTP_PORT, 10);
+  const port = (!isNaN(rawPort) && rawPort > 0) ? rawPort : 465;
+  const isSecure = process.env.SMTP_SECURE !== undefined 
+    ? process.env.SMTP_SECURE === 'true' 
+    : port === 465;
+
   const rawPass = process.env.SMTP_PASSWORD || '';
   const pass = rawPass.replace(/\s+/g, '');
   const user = (process.env.SMTP_USER || '').trim();
 
-  // On cloud platforms like Render, IPv6 outbound routing often fails with ENETUNREACH.
-  // We force IPv4 resolution by setting family: 4.
   return nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true, // SSL
-    family: 4, // Force IPv4 (fixes ENETUNREACH 2607:f8b0:400e:c08::6d:465)
+    host,
+    port,
+    secure: isSecure,
+    family: 4, // Enforce IPv4 to avoid ENETUNREACH on cloud environments like Render
     auth: {
-      user: user,
-      pass: pass
+      user,
+      pass
     },
     tls: {
       rejectUnauthorized: false
@@ -60,7 +63,44 @@ async function sendEmail({ to, subject, html, text, attachments }) {
 
   console.log(`[EMAIL DELIVERY] Attempting delivery to: ${to} | Subject: "${subject}"`);
 
-  // PRIMARY: Direct SMTP (Gmail) with IPv4 enforcement
+  // 1. Brevo HTTP REST API (Recommended for Render free tier: sends to ANY email, no domain required)
+  if (process.env.BREVO_API_KEY) {
+    try {
+      const brevoAttachments = (attachments || []).map(att => ({
+        name: att.filename,
+        content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
+      }));
+
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': process.env.BREVO_API_KEY.trim(),
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: { name: fromName, email: process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER || fromEmail },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+          textContent: text || html.replace(/<[^>]+>/g, ''),
+          attachment: brevoAttachments.length > 0 ? brevoAttachments : undefined
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        console.log(`[EMAIL DELIVERY] ✓ Brevo HTTP API sent successfully | messageId: ${data.messageId} | to: ${to}`);
+        return { success: true, messageId: data.messageId };
+      } else {
+        console.warn('[EMAIL DELIVERY] ⚠ Brevo API error:', data);
+      }
+    } catch (brevoErr) {
+      console.warn('[EMAIL DELIVERY] ⚠ Brevo HTTP dispatch failed:', brevoErr.message);
+    }
+  }
+
+  // 2. Direct SMTP (Gmail) with IPv4 enforcement
   if (process.env.SMTP_USER && process.env.SMTP_PASSWORD) {
     try {
       const currentTransporter = createEmailTransporter();
