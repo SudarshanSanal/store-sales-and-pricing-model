@@ -63,7 +63,48 @@ async function sendEmail({ to, subject, html, text, attachments }) {
 
   console.log(`[EMAIL DELIVERY] Attempting delivery to: ${to} | Subject: "${subject}"`);
 
-  // 1. Brevo HTTP REST API (Recommended for Render free tier: sends to ANY email, no domain required)
+  // 1. Mailjet HTTP REST API (Free: 200 emails/day, no phone/domain required)
+  if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
+    try {
+      const mjAuth = Buffer.from(`${process.env.MAILJET_API_KEY.trim()}:${process.env.MAILJET_SECRET_KEY.trim()}`).toString('base64');
+      const mjAttachments = (attachments || []).map(att => ({
+        ContentType: att.contentType || 'application/pdf',
+        Filename: att.filename,
+        Base64Content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
+      }));
+
+      const res = await fetch('https://api.mailjet.com/v3.1/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${mjAuth}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          Messages: [{
+            From: { Email: fromEmail, Name: fromName },
+            To: [{ Email: to }],
+            Subject: subject,
+            HTMLPart: html,
+            TextPart: text || html.replace(/<[^>]+>/g, ''),
+            Attachments: mjAttachments.length > 0 ? mjAttachments : undefined
+          }]
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.Messages && data.Messages[0].Status === 'success') {
+        const msgId = data.Messages[0].To[0].MessageID;
+        console.log(`[EMAIL DELIVERY] ✓ Mailjet API sent successfully | messageId: ${msgId} | to: ${to}`);
+        return { success: true, messageId: String(msgId) };
+      } else {
+        console.warn('[EMAIL DELIVERY] ⚠ Mailjet API error:', JSON.stringify(data));
+      }
+    } catch (mjErr) {
+      console.warn('[EMAIL DELIVERY] ⚠ Mailjet HTTP dispatch failed:', mjErr.message);
+    }
+  }
+
+  // 2. Brevo HTTP REST API (alternative: 300 emails/day)
   if (process.env.BREVO_API_KEY) {
     try {
       const brevoAttachments = (attachments || []).map(att => ({
@@ -2224,6 +2265,57 @@ app.get('/api/health', (req, res) => {
 
 // Diagnostic endpoint to test email configuration live on Render
 app.get('/api/test-email-config', async (req, res) => {
+  // 1. Check Mailjet first (preferred for Render free tier)
+  if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
+    try {
+      const mjAuth = Buffer.from(`${process.env.MAILJET_API_KEY.trim()}:${process.env.MAILJET_SECRET_KEY.trim()}`).toString('base64');
+      const testRes = await fetch('https://api.mailjet.com/v3/REST/apikey', {
+        headers: { 'Authorization': `Basic ${mjAuth}` }
+      });
+      if (testRes.ok) {
+        return res.json({
+          status: 'success',
+          method: 'Mailjet HTTP API',
+          message: 'Mailjet API key verified successfully! Emails will be sent via Mailjet.',
+          sender: process.env.EMAIL_FROM || process.env.SMTP_USER || 'configured'
+        });
+      } else {
+        const errData = await testRes.json().catch(() => ({}));
+        return res.status(400).json({
+          status: 'error',
+          method: 'Mailjet HTTP API',
+          message: 'Mailjet API key is invalid.',
+          details: errData
+        });
+      }
+    } catch (mjErr) {
+      return res.status(500).json({
+        status: 'error',
+        method: 'Mailjet HTTP API',
+        message: 'Mailjet connectivity test failed: ' + mjErr.message
+      });
+    }
+  }
+
+  // 2. Check Brevo
+  if (process.env.BREVO_API_KEY) {
+    try {
+      const testRes = await fetch('https://api.brevo.com/v3/account', {
+        headers: { 'api-key': process.env.BREVO_API_KEY.trim(), 'Accept': 'application/json' }
+      });
+      if (testRes.ok) {
+        return res.json({
+          status: 'success',
+          method: 'Brevo HTTP API',
+          message: 'Brevo API key verified successfully! Emails will be sent via Brevo.'
+        });
+      }
+    } catch (brevoErr) {
+      // fall through to SMTP
+    }
+  }
+
+  // 3. Fall back to SMTP test
   const user = (process.env.SMTP_USER || '').trim();
   const rawPass = process.env.SMTP_PASSWORD || '';
   const pass = rawPass.replace(/\s+/g, '');
@@ -2231,11 +2323,13 @@ app.get('/api/test-email-config', async (req, res) => {
   if (!user || !rawPass) {
     return res.status(400).json({
       status: 'error',
-      message: 'SMTP credentials missing in Render environment variables.',
+      message: 'No email service configured. Add MAILJET_API_KEY + MAILJET_SECRET_KEY (or SMTP credentials) in Render environment.',
       envStatus: {
+        hasMAILJET_API_KEY: !!process.env.MAILJET_API_KEY,
+        hasMAILJET_SECRET_KEY: !!process.env.MAILJET_SECRET_KEY,
+        hasBREVO_API_KEY: !!process.env.BREVO_API_KEY,
         hasSMTP_USER: !!user,
-        hasSMTP_PASSWORD: !!rawPass,
-        hasEMAIL_FROM: !!process.env.EMAIL_FROM
+        hasSMTP_PASSWORD: !!rawPass
       }
     });
   }
