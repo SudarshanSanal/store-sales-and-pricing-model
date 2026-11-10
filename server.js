@@ -2143,10 +2143,9 @@ app.get('/api/health', (req, res) => {
 
 // Diagnostic endpoint to test email configuration live on Render
 app.get('/api/test-email-config', async (req, res) => {
-  const user = process.env.SMTP_USER || '';
+  const user = (process.env.SMTP_USER || '').trim();
   const rawPass = process.env.SMTP_PASSWORD || '';
-  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-  const port = process.env.SMTP_PORT || '587';
+  const pass = rawPass.replace(/\s+/g, '');
 
   if (!user || !rawPass) {
     return res.status(400).json({
@@ -2160,27 +2159,78 @@ app.get('/api/test-email-config', async (req, res) => {
     });
   }
 
+  const results = [];
+
+  // Method 1: Direct SSL on port 465
   try {
-    const testTransporter = createEmailTransporter();
-    await testTransporter.verify();
-    res.json({
+    const t465 = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: { user, pass },
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000
+    });
+    await t465.verify();
+    return res.json({
       status: 'success',
+      method: 'Port 465 SSL',
       message: 'SMTP connection verified successfully with Gmail!',
-      user: user,
-      host: host,
-      port: port
+      user
     });
-  } catch (err) {
-    res.status(500).json({
-      status: 'error',
-      message: err.message,
-      code: err.code || 'UNKNOWN',
-      response: err.response || null,
-      tip: err.message.includes('535') 
-        ? 'Bad credentials: Please check that SMTP_USER is your full Gmail address and SMTP_PASSWORD is a 16-character Google App Password (not your normal Gmail login password).'
-        : 'Network or configuration issue.'
-    });
+  } catch (err1) {
+    results.push({ method: 'Port 465', error: err1.message, code: err1.code });
   }
+
+  // Method 2: service 'gmail' preset
+  try {
+    const tService = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user, pass },
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000
+    });
+    await tService.verify();
+    return res.json({
+      status: 'success',
+      method: 'Gmail Service Preset',
+      message: 'SMTP connection verified successfully with Gmail!',
+      user
+    });
+  } catch (err2) {
+    results.push({ method: 'Service Preset', error: err2.message, code: err2.code });
+  }
+
+  // Method 3: STARTTLS on port 587
+  try {
+    const t587 = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: { user, pass },
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000
+    });
+    await t587.verify();
+    return res.json({
+      status: 'success',
+      method: 'Port 587 STARTTLS',
+      message: 'SMTP connection verified successfully with Gmail!',
+      user
+    });
+  } catch (err3) {
+    results.push({ method: 'Port 587', error: err3.message, code: err3.code });
+  }
+
+  return res.status(500).json({
+    status: 'error',
+    message: 'All SMTP connection methods failed.',
+    results,
+    tip: 'Render free instances occasionally block direct SMTP ports. If all ports time out, we can switch to a free HTTP API like Resend or Brevo.'
+  });
 });
 
 // Serve Vite production build static assets if dist exists
