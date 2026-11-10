@@ -2144,6 +2144,48 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', server: 'NodeJS Express', database: db ? 'connected' : 'disconnected' });
 });
 
+// Diagnostic endpoint to test email configuration live on Render
+app.get('/api/test-email-config', async (req, res) => {
+  const user = process.env.SMTP_USER || '';
+  const rawPass = process.env.SMTP_PASSWORD || '';
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = process.env.SMTP_PORT || '587';
+
+  if (!user || !rawPass) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'SMTP credentials missing in Render environment variables.',
+      envStatus: {
+        hasSMTP_USER: !!user,
+        hasSMTP_PASSWORD: !!rawPass,
+        hasEMAIL_FROM: !!process.env.EMAIL_FROM
+      }
+    });
+  }
+
+  try {
+    const testTransporter = createEmailTransporter();
+    await testTransporter.verify();
+    res.json({
+      status: 'success',
+      message: 'SMTP connection verified successfully with Gmail!',
+      user: user,
+      host: host,
+      port: port
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: 'error',
+      message: err.message,
+      code: err.code || 'UNKNOWN',
+      response: err.response || null,
+      tip: err.message.includes('535') 
+        ? 'Bad credentials: Please check that SMTP_USER is your full Gmail address and SMTP_PASSWORD is a 16-character Google App Password (not your normal Gmail login password).'
+        : 'Network or configuration issue.'
+    });
+  }
+});
+
 // Serve Vite production build static assets if dist exists
 app.use(express.static(path.join(__dirname, 'dist')));
 
