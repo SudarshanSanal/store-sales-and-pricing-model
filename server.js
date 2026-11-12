@@ -41,6 +41,49 @@ async function sendEmail({ to, subject, html, text, attachments }) {
 
   console.log(`[EMAIL OTP] Attempting delivery to: ${to} | Subject: "${subject}"`);
 
+  // 1. Mailjet HTTP REST API (Reliable HTTP delivery over port 443)
+  if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
+    try {
+      const mjAuth = Buffer.from(`${process.env.MAILJET_API_KEY.trim()}:${process.env.MAILJET_SECRET_KEY.trim()}`).toString('base64');
+      const mjSenderEmail = (process.env.MAILJET_SENDER_EMAIL || fromEmail).trim();
+      const mjAttachments = (attachments || []).map(att => ({
+        ContentType: att.contentType || 'application/pdf',
+        Filename: att.filename,
+        Base64Content: Buffer.isBuffer(att.content) ? att.content.toString('base64') : Buffer.from(att.content).toString('base64')
+      }));
+
+      const res = await fetch('https://api.mailjet.com/v3.1/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${mjAuth}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          Messages: [{
+            From: { Email: mjSenderEmail, Name: fromName },
+            To: [{ Email: to }],
+            Subject: subject,
+            HTMLPart: html,
+            TextPart: text || html.replace(/<[^>]+>/g, ''),
+            Attachments: mjAttachments.length > 0 ? mjAttachments : undefined
+          }]
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.Messages && data.Messages[0].Status === 'success') {
+        const msgId = data.Messages[0].To[0].MessageID;
+        console.log(`[EMAIL OTP] ✓ Mailjet sent successfully | messageId: ${msgId} | to: ${to}`);
+        return { success: true, messageId: String(msgId) };
+      } else {
+        const errMsg = data.Messages?.[0]?.Errors?.[0]?.ErrorMessage || JSON.stringify(data);
+        console.warn(`[EMAIL OTP] ⚠ Mailjet API returned error: ${errMsg}`);
+      }
+    } catch (mjErr) {
+      console.warn('[EMAIL OTP] ⚠ Mailjet dispatch failed, trying SMTP fallback:', mjErr.message);
+    }
+  }
+
   // DEV MODE: No SMTP credentials configured
   if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
     console.warn(`[EMAIL OTP] ⚠ DEV MODE — SMTP_USER/SMTP_PASSWORD not set in .env`);
